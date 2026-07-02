@@ -1335,6 +1335,14 @@ av_cold int ff_decklink_read_header(AVFormatContext *avctx)
         st->time_base.den         = ctx->bmd_tb_den;
         st->time_base.num         = ctx->bmd_tb_num;
         st->codecpar->codec_id    = AV_CODEC_ID_DVB_TELETEXT;
+        st->codecpar->extradata   = (uint8_t *)av_mallocz(2 + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!st->codecpar->extradata) {
+            ret = AVERROR(ENOMEM);
+            goto error;
+        }
+        st->codecpar->extradata[0] = 0x10;
+        st->codecpar->extradata[1] = 0x01;
+        st->codecpar->extradata_size = 2;
         avpriv_set_pts_info(st, 64, 1, 1000000);  /* 64 bits pts in us */
         ctx->teletext_st = st;
     }
