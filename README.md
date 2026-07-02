@@ -1,3 +1,20 @@
+# To add dvb teletext output to decklink cards/devices you need libklvanc and decklink sdk.
+
+## Build this improved ffmpeg with something like 
+
+* ./configure --enable-decklink --enable-libklvanc --disable-x86asm --enable-nonfree  --extra-cflags="-I/home/alex/Development/decklink/desktopvideo_sdk-api/Linux/include -I/home/alex/Development/decklink/libklvanc/src"  --extra-cxxflags="-I/home/alex/Development/decklink/desktopvideo_sdk-api/Linux/include -I/home/alex/Development/decklink/libklvanc/src" --extra-ldflags="-L/home/alex/Development/decklink/libklvanc/src/.libs" --extra-libs="-lklvanc"
+* make clean
+* make -j 12
+
+## To send dvb teletext into Decklink use:
+* ./ffmpeg -hide_banner -loglevel error -nostats -re -i /home/alex/Development/nimble/test/content/mp4/teletext-eng.ts -map 0:v:0 -map 0:s:0 -map 0:a:0 -c:v wrapped_avframe -pix_fmt uyvy422 -c:s copy -c:a pcm_s16le -ar 48000 -ac 2 -f decklink -teletext_lines all "DeckLink Duo (1)"
+
+
+## To receive embedded VANC Dvb teletext from Decklink
+* [use Nimble streamer ](https://softvelum.com/nimble/sdi/) Nimble fully support working with teletext from decklink sdi as well as mpegts teletext in input/output modes and transcoding
+* ./ffmpeg -hide_banner -y -format_code Hi50 -teletext_lines all -f decklink -i "DeckLink Duo (4)" -t 8 -map 0:1 -map 0:2 -c:v mpeg2video -pix_fmt
+  yuv420p -b:v 10000k -c:s copy -f mpegts /tmp/decklink-v210-video-teletext.ts
+
 # FFmpeg README
 
 FFmpeg is a collection of libraries and tools to process multimedia content
