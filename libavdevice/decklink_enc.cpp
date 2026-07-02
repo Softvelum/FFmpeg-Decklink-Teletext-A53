@@ -36,10 +36,12 @@ extern "C" {
 
 extern "C" {
 #include "libavformat/avformat.h"
+#include "libavcodec/dvbtxt.h"
 #include "libavcodec/bytestream.h"
 #include "libavutil/frame.h"
 #include "libavutil/internal.h"
 #include "libavutil/imgutils.h"
+#include "libavutil/reverse.h"
 #include "avdevice.h"
 }
 
@@ -364,6 +366,7 @@ static int decklink_setup_subtitle(AVFormatContext *avctx, AVStream *st)
     switch(st->codecpar->codec_id) {
 #if CONFIG_LIBKLVANC
     case AV_CODEC_ID_EIA_608:
+    case AV_CODEC_ID_DVB_TELETEXT:
         /* No special setup required */
         ret = 0;
         break;
@@ -429,6 +432,122 @@ av_cold int ff_decklink_write_trailer(AVFormatContext *avctx)
 }
 
 #if CONFIG_LIBKLVANC
+static int teletext_line_matches_mask(int line, int64_t mask)
+{
+    int shift = -1;
+
+    if (line >= 6 && line <= 22)
+        shift = line - 6;
+    else if (line >= 318 && line <= 335)
+        shift = line - 318 + 17;
+
+    return shift >= 0 && ((1ULL << shift) & mask);
+}
+
+static int teletext_line_from_data_unit(const uint8_t *unit, int *line,
+                                        uint8_t *op47_line, uint8_t *op47_field)
+{
+    int line_offset = unit[2] & 0x1f;
+    int field_parity = unit[2] & 0x20;
+
+    if (!line_offset)
+        return AVERROR_INVALIDDATA;
+
+    *line = line_offset + (field_parity ? 0 : 313);
+    *op47_line = line_offset;
+    *op47_field = field_parity ? 1 : 0;
+
+    return 0;
+}
+
+static int construct_teletext(AVFormatContext *avctx, struct decklink_ctx *ctx,
+                              AVPacket *pkt, struct klvanc_line_set_s *vanc_lines)
+{
+    struct decklink_cctx *cctx = (struct decklink_cctx *)avctx->priv_data;
+    const int vanc_line = 13;
+    const uint8_t *buf = pkt->data;
+    int size = pkt->size;
+    int64_t wanted_lines = cctx->teletext_lines ? cctx->teletext_lines : 0x7ffffffffLL;
+    int ret = 0;
+
+    if (size > 0 && ff_data_identifier_is_teletext(buf[0])) {
+        buf++;
+        size--;
+    }
+
+    while (size >= 2) {
+        struct klvanc_packet_sdp_s *sdp = NULL;
+        uint16_t *sdp_words = NULL;
+        uint16_t sdp_word_count = 0;
+        int desc = 0;
+
+        ret = klvanc_create_SDP(&sdp);
+        if (ret)
+            return ret;
+
+        sdp->identifier = 0x5115;
+        sdp->format_code = SDP_WSS_TELETEXT;
+
+        while (size >= 2 && desc < (int)FF_ARRAY_ELEMS(sdp->descriptors)) {
+            int data_unit_id = buf[0];
+            int data_unit_length = buf[1];
+            int line;
+
+            if (data_unit_length + 2 > size) {
+                av_log(avctx, AV_LOG_WARNING, "Invalid DVB teletext data unit length\n");
+                ret = AVERROR_INVALIDDATA;
+                goto next_sdp;
+            }
+
+            if (ff_data_unit_id_is_teletext(data_unit_id) &&
+                data_unit_length == 0x2c &&
+                teletext_line_from_data_unit(buf, &line,
+                                             &sdp->descriptors[desc].line,
+                                             &sdp->descriptors[desc].field) >= 0 &&
+                teletext_line_matches_mask(line, wanted_lines)) {
+                sdp->descriptors[desc].data[0] = 0x55;
+                sdp->descriptors[desc].data[1] = 0x55;
+                sdp->descriptors[desc].data[2] = 0x27;
+                for (int i = 0; i < 42; i++)
+                    sdp->descriptors[desc].data[3 + i] = ff_reverse[buf[4 + i]];
+                desc++;
+            }
+
+            buf += data_unit_length + 2;
+            size -= data_unit_length + 2;
+        }
+
+        if (!desc) {
+            klvanc_destroy_SDP(sdp);
+            continue;
+        }
+
+        klvanc_finalize_SDP(sdp, ctx->sdp_sequence_num++);
+        ret = klvanc_convert_SDP_to_words(sdp, &sdp_words, &sdp_word_count);
+        if (ret) {
+            av_log(avctx, AV_LOG_ERROR, "Failed converting DVB teletext to OP47 SDP words\n");
+            goto next_sdp;
+        }
+
+        ret = klvanc_line_insert(ctx->vanc_ctx, vanc_lines, sdp_words,
+                                 sdp_word_count, vanc_line, 0);
+        if (ret)
+            av_log(avctx, AV_LOG_ERROR, "VANC line insertion failed\n");
+
+next_sdp:
+        if (sdp_words)
+            free(sdp_words);
+        klvanc_destroy_SDP(sdp);
+        if (ret)
+            return ret;
+    }
+
+    if (size > 0)
+        av_log(avctx, AV_LOG_WARNING, "Trailing bytes in DVB teletext packet ignored\n");
+
+    return 0;
+}
+
 static void construct_cc(AVFormatContext *avctx, struct decklink_ctx *ctx,
                          AVPacket *pkt, struct klvanc_line_set_s *vanc_lines)
 {
@@ -617,6 +736,12 @@ static int decklink_construct_vanc(AVFormatContext *avctx, struct decklink_ctx *
         }
 
         ret = ff_decklink_packet_queue_get(&ctx->vanc_queue, &vanc_pkt, 1);
+        if (ret <= 0) {
+            av_log(avctx, AV_LOG_WARNING, "Failed to dequeue VANC packet\n");
+            ret = 0;
+            continue;
+        }
+        ret = 0;
         if (vanc_pkt.pts + 1 < ctx->last_pts) {
             av_log(avctx, AV_LOG_WARNING, "VANC packet too old, throwing away\n");
             av_packet_unref(&vanc_pkt);
@@ -651,6 +776,9 @@ static int decklink_construct_vanc(AVFormatContext *avctx, struct decklink_ctx *
                 }
             }
             klvanc_smpte2038_anc_data_packet_free(pkt_2038);
+        } else if (vanc_st->codecpar->codec_id == AV_CODEC_ID_DVB_TELETEXT) {
+            if (construct_teletext(avctx, ctx, &vanc_pkt, &vanc_lines) < 0)
+                av_log(avctx, AV_LOG_WARNING, "Failed to construct OP47 teletext VANC packet\n");
         }
         av_packet_unref(&vanc_pkt);
     }
@@ -743,11 +871,6 @@ static int decklink_write_video_packet(AVFormatContext *avctx, AVPacket *pkt)
         }
 
         frame = new decklink_frame(ctx, avpacket, st->codecpar->codec_id, ctx->bmd_height, ctx->bmd_width);
-
-#if CONFIG_LIBKLVANC
-        if (decklink_construct_vanc(avctx, ctx, pkt, frame, st))
-            av_log(avctx, AV_LOG_ERROR, "Failed to construct VANC\n");
-#endif
     }
 
     if (!frame) {
@@ -756,6 +879,11 @@ static int decklink_write_video_packet(AVFormatContext *avctx, AVPacket *pkt)
         av_packet_free(&avpacket);
         return AVERROR(EIO);
     }
+
+#if CONFIG_LIBKLVANC
+    if (decklink_construct_vanc(avctx, ctx, pkt, frame, st))
+        av_log(avctx, AV_LOG_ERROR, "Failed to construct VANC\n");
+#endif
 
     /* Always keep at most one second of frames buffered. */
     pthread_mutex_lock(&ctx->mutex);
@@ -847,8 +975,14 @@ static int decklink_write_subtitle_packet(AVFormatContext *avctx, AVPacket *pkt)
 {
     struct decklink_cctx *cctx = (struct decklink_cctx *)avctx->priv_data;
     struct decklink_ctx *ctx = (struct decklink_ctx *)cctx->ctx;
+    AVStream *st = avctx->streams[pkt->stream_index];
 
-    ff_ccfifo_extractbytes(&ctx->cc_fifo, pkt->data, pkt->size);
+    if (st->codecpar->codec_id == AV_CODEC_ID_EIA_608) {
+        ff_ccfifo_extractbytes(&ctx->cc_fifo, pkt->data, pkt->size);
+    } else if (st->codecpar->codec_id == AV_CODEC_ID_DVB_TELETEXT) {
+        if (ff_decklink_packet_queue_put(&ctx->vanc_queue, pkt) < 0)
+            av_log(avctx, AV_LOG_WARNING, "Failed to queue DVB teletext packet\n");
+    }
 
     return 0;
 }

@@ -33,6 +33,9 @@ static const AVOption options[] = {
     { "list_formats", "list supported formats"  , OFFSET(list_formats), AV_OPT_TYPE_INT   , { .i64 = 0   }, 0, 1, ENC },
     { "preroll"     , "video preroll in seconds", OFFSET(preroll     ), AV_OPT_TYPE_DOUBLE, { .dbl = 0.5 }, 0, 5, ENC },
     { "vanc_queue_size", "VANC queue buffer size", OFFSET(vanc_queue_size), AV_OPT_TYPE_INT64, { .i64 = (1024 * 1024)}, 0, INT64_MAX, ENC },
+    { "teletext_lines", "teletext lines bitmask for DVB teletext VANC output", OFFSET(teletext_lines), AV_OPT_TYPE_INT64, { .i64 = 0x7ffffffffLL }, 0, 0x7ffffffffLL, ENC, .unit = "teletext_lines"},
+    { "standard",      NULL,                                                    0, AV_OPT_TYPE_CONST, { .i64 = 0x7fff9fffeLL }, 0, 0, ENC, .unit = "teletext_lines"},
+    { "all",           NULL,                                                    0, AV_OPT_TYPE_CONST, { .i64 = 0x7ffffffffLL }, 0, 0, ENC, .unit = "teletext_lines"},
 #if BLACKMAGIC_DECKLINK_API_VERSION >= 0x0b000000
     { "duplex_mode" , "duplex mode"             , OFFSET(duplex_mode ), AV_OPT_TYPE_INT   , { .i64 = 0   }, 0, 5, ENC, .unit = "duplex_mode"},
 #else
