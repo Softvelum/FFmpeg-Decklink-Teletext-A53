@@ -11,7 +11,7 @@
 
 
 ## To receive embedded VANC Dvb teletext from Decklink
-* [use Nimble streamer ](https://softvelum.com/nimble/sdi/) Nimble fully support working with teletext from decklink sdi as well as mpegts teletext in input/output modes and transcoding
+* [Use Nimble streamer ](https://softvelum.com/2026/07/dvb-teletext-closed-captions-sdi-input-nimble-streamer/) Nimble fully support working with teletext from Decklink SDI as well as MPEGTS teletext in input/output modes and transcoding
 * ./ffmpeg -hide_banner -y -format_code Hi50 -teletext_lines all -f decklink -i "DeckLink Duo (4)" -t 8 -map 0:1 -map 0:2 -c:v mpeg2video -pix_fmt
   yuv420p -b:v 10000k -c:s copy -f mpegts /tmp/decklink-v210-video-teletext.ts
 
