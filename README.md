@@ -46,6 +46,9 @@ The offline documentation is available in the **doc/** directory.
 The online documentation is available in the main [website](https://ffmpeg.org)
 and in the [wiki](https://trac.ffmpeg.org).
 
+Also [DVB Teletext and Closed Captions Support for DeckLink SDI Input in Nimble Streamer](https://softvelum.com/2026/07/dvb-teletext-closed-captions-sdi-input-nimble-streamer/) article for the exmaple of usage.
+
+
 ### Examples
 
 Coding examples are available in the **doc/examples** directory.
